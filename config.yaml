@@ -1,0 +1,14 @@
+# map configuration
+map_width: 200
+map_height: 200
+num_obstacles: 50
+max_obstacle_size: 30
+
+# robot configuration
+robot_radius: 2
+
+# start and goal positions
+start_x: 0
+start_y: 0
+goal_x: 90
+goal_y: 90
