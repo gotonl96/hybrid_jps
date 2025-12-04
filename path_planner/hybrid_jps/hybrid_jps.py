@@ -180,7 +180,7 @@ class HybridJPS:
             """JPS 점프 (빠른 탐색) - 더 작은 스텝으로"""
             cx, cy, ctheta = curr
             dx, dy = dir_vec
-            step = resolution * 1.0  # 2.0 -> 1.0 (더 세밀하게)
+            step = resolution * 1.0
             max_steps = 100
 
             for i in range(max_steps):
@@ -198,9 +198,13 @@ class HybridJPS:
                 if has_forced_neighbor((ix, iy), (dx, dy)):
                     return (nx, ny, ctheta, True)
                 
-                # 목표 근처 또는 일정 거리마다 프리미티브 체크
+                # 목표에 가까워지면 프리미티브로 정밀 접근
                 dist_to_goal = math.hypot(nx - goal[0], ny - goal[1])
-                if dist_to_goal < 10.0 or i % 5 == 0:  # 5스텝마다 프리미티브 옵션
+                if dist_to_goal < 15.0:  # 목표 15m 이내
+                    return (nx, ny, ctheta, True)
+                
+                # 일정 거리마다 프리미티브 옵션
+                if i % 5 == 0 and i > 0:
                     return (nx, ny, ctheta, True)
                 
                 cx, cy = nx, ny
@@ -226,8 +230,9 @@ class HybridJPS:
                 continue
             visited[dkey] = cost
 
-            # 목표 도달 (범위 확대)
-            if math.hypot(x - goal[0], y - goal[1]) < 5.0:
+            # 목표 도달 (정확한 목표 지점에 도착해야 함)
+            goal_dist = math.hypot(x - goal[0], y - goal[1])
+            if goal_dist < resolution * 1.5:  # 해상도 범위 내
                 return _reconstruct_path(came_from, current)
 
             # Forced Neighbor 지점이거나 목표 근처 -> 프리미티브 사용
