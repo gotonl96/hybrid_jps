@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 
 show_animation = False
 
-
 class Node:
 
     def __init__(self, x, y, cost, parent_index):
