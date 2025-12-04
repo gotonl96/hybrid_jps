@@ -11,6 +11,7 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 import os
+from datetime import datetime
 
 class MapGenerator:
     def __init__(self, width, height, obstacle_count=0, obstacle_size_range=(5, 15), seed=None):
@@ -46,12 +47,21 @@ class MapGenerator:
                 self.map[y_pos:y_pos + obs_height, x_pos:x_pos + obs_width] = 1
                 break
 
-    def save_map(self, filename="generated_map.npz"):
+        # start와 goal 주변 공간은 주행가능하도록 확보
+        self.map[self.start[1]-5:self.start[1]+6, self.start[0]-5:self.start[0]+6] = 0
+        self.map[self.goal[1]-5:self.goal[1]+6, self.goal[0]-5:self.goal[0]+6] = 0
+
+    def save_map(self, save_dir="results"):
         """
         맵 + start + goal + 기타 정보 저장
         """
+        # 자동 파일명 생성 맵사이즈 + 시간 기반
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"map_{self.width}x{self.height}_{timestamp}.npz"
+        filepath = os.path.join(save_dir, filename)
+        
         np.savez_compressed(
-            filename,
+            filepath,
             map=self.map,
             start=self.start,
             goal=self.goal,
@@ -60,7 +70,7 @@ class MapGenerator:
             obstacle_count=self.obstacle_count,
             seed=self.seed
         )
-        print(f"맵이 저장되었습니다: {os.path.abspath(filename)}")
+        print(f"맵이 저장되었습니다: {os.path.abspath(filepath)}")
 
     @staticmethod
     def load_map(filename="generated_map.npz"):

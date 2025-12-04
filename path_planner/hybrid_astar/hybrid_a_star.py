@@ -384,8 +384,8 @@ def main():
     print("Start Hybrid A* planning")
 
     # Set Initial parameters
-    MAP_WIDTH = 200  # [cells]
-    MAP_HEIGHT = 200  # [cells]
+    MAP_WIDTH = 100  # [cells]
+    MAP_HEIGHT = 100  # [cells]
 
     start = [10.0, 10.0, np.deg2rad(90.0)]
     goal = [MAP_WIDTH - 10, MAP_HEIGHT - 10, np.deg2rad(90.0)]
@@ -393,7 +393,7 @@ def main():
     print("start : ", start)
     print("goal : ", goal)
 
-    map = MapGenerator(MAP_WIDTH, MAP_HEIGHT, 550, (1, 5))
+    map = MapGenerator(MAP_WIDTH, MAP_HEIGHT, 150, (1, 5))
     map.generate_obstacles()
     ox, oy = map.get_obstacle_points(resolution=1)
 

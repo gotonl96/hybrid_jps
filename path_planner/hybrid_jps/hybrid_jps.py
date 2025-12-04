@@ -397,11 +397,15 @@ from visualization.visualize import Visualizer
 
 if __name__ == "__main__":
     
-    MAP_SIZE = 100
+    MAP_SIZE = 1000
     
-    map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, 20, (5, 15))
+    map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, 1500, (5, 10))
     map_gen.generate_obstacles()
+    map_gen.save_map()
     grid = map_gen.get_map()
+    
+    import time
+    start_time = time.time()
     
     path = VehicleKinematicJPS.plan(
         grid=grid,
@@ -410,8 +414,13 @@ if __name__ == "__main__":
         resolution=1.0
     )
 
+    elapsed = time.time() - start_time
+    print(f"경로 탐색 시간: {elapsed:.2f} 초")
+
     visualizer = Visualizer()
     visualizer.set_grid_map(grid)
     visualizer.set_start_goal((10.5, 10.5), (MAP_SIZE - 10, MAP_SIZE - 10))
     visualizer.set_path(path, "Hybrid JPS (Jump + Primitives)")
     visualizer.draw()
+    
+    
