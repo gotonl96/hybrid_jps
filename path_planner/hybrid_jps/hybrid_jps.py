@@ -249,6 +249,90 @@ def _reconstruct_path(came_from, current):
     path.append((current[0], current[1]))
     return path[::-1]
 
+
+def smooth_path_with_beziers(path: List[Tuple[float, float]],
+                             radius: float = 3.0,
+                             angle_threshold_deg: float = 15.0,
+                             samples: int = 12) -> List[Tuple[float, float]]:
+    """Replace sharp corners in `path` with smooth cubic Bézier arcs.
+
+    - Detects corners at triples of consecutive points.
+    - If turning angle is sharper than `angle_threshold_deg`, compute tangent
+      points and insert a sampled cubic Bézier between them.
+    - If the requested `radius` does not fit on the neighboring segments,
+      it is reduced to the maximum feasible value.
+    """
+    if not path or len(path) < 3:
+        return path
+
+    def dist(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    new_path: List[Tuple[float, float]] = [path[0]]
+    ang_thr = math.radians(angle_threshold_deg)
+
+    for i in range(1, len(path) - 1):
+        p_prev = path[i - 1]
+        p_cur = path[i]
+        p_next = path[i + 1]
+
+        v1x, v1y = p_cur[0] - p_prev[0], p_cur[1] - p_prev[1]
+        v2x, v2y = p_next[0] - p_cur[0], p_next[1] - p_cur[1]
+        l1 = math.hypot(v1x, v1y)
+        l2 = math.hypot(v2x, v2y)
+        if l1 < 1e-6 or l2 < 1e-6:
+            new_path.append(p_cur)
+            continue
+
+        u1x, u1y = v1x / l1, v1y / l1
+        u2x, u2y = v2x / l2, v2y / l2
+        cosang = max(-1.0, min(1.0, u1x * u2x + u1y * u2y))
+        angle = math.acos(cosang)
+        if angle < ang_thr:
+            new_path.append(p_cur)
+            continue
+
+        half_theta = angle / 2.0
+        tan_half = math.tan(half_theta) if abs(math.tan(half_theta)) > 1e-6 else 1e6
+        t = radius / tan_half
+
+        max_t = min(l1, l2) * 0.9
+        if t > max_t:
+            t = max_t
+            radius_eff = t * tan_half
+        else:
+            radius_eff = radius
+
+        p_t1 = (p_cur[0] - u1x * t, p_cur[1] - u1y * t)
+        p_t2 = (p_cur[0] + u2x * t, p_cur[1] + u2y * t)
+
+        control_scale = t * 0.6
+        p0 = p_t1
+        p3 = p_t2
+        p1 = (p0[0] + u1x * control_scale, p0[1] + u1y * control_scale)
+        p2 = (p3[0] - u2x * control_scale, p3[1] - u2y * control_scale)
+
+        if dist(new_path[-1], p0) > 1e-6:
+            new_path.append(p0)
+
+        for s_i in range(1, samples + 1):
+            t_s = s_i / float(samples)
+            b0 = (1 - t_s) ** 3
+            b1 = 3 * (1 - t_s) ** 2 * t_s
+            b2 = 3 * (1 - t_s) * (t_s ** 2)
+            b3 = t_s ** 3
+            bx = b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0]
+            by = b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1]
+            new_path.append((bx, by))
+
+    new_path.append(path[-1])
+    # remove near-duplicates
+    cleaned: List[Tuple[float, float]] = [new_path[0]]
+    for pt in new_path[1:]:
+        if dist(cleaned[-1], pt) > 1e-4:
+            cleaned.append(pt)
+    return cleaned
+
 if __name__ == "__main__":
     map_gen = MapGenerator(100, 100, 20, (5, 15))
     map_gen.generate_obstacles()
@@ -262,6 +346,10 @@ if __name__ == "__main__":
             goal=(89.5, 89.5),
         resolution=1.0
     )
+
+    # post-process: replace sharp corners with smooth Bézier arcs
+    if path:
+        path = smooth_path_with_beziers(path, radius=3.0, angle_threshold_deg=20.0, samples=16)
 
     visualizer = Visualizer()
     visualizer.set_grid_map(grid)
