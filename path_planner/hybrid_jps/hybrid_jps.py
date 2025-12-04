@@ -47,9 +47,9 @@ def get_vehicle_corners(x, y, theta):
 
 def _generate_primitives():
     """차량 역학 기반 모션 프리미티브 - Forced Neighbor에서 사용"""
-    angles = [-15, -10, -5, 0, 5, 10, 15]
+    angles = [-15, -10, -5, 0, 5, 10, 15]  # 다시 9개로 (부드러운 경로)
     primitives = []
-    primitive_length = 3.0  # 짧은 프리미티브 (세밀한 제어)
+    primitive_length = 3.0
     
     for deg in angles:
         rad = math.radians(deg)
@@ -68,7 +68,7 @@ def _generate_primitives():
             path.append((x, y, theta))
         
         distance_cost = math.hypot(x, y)
-        rotation_penalty = abs(deg) * 0.15
+        rotation_penalty = abs(deg) * 0.12
         
         cost = distance_cost + rotation_penalty
         
@@ -104,9 +104,10 @@ class HybridJPS:
             return int(x / resolution), int(y / resolution)
 
         def check_vehicle_collision(x, y, theta):
-            """차량 크기 고려 충돌 검사"""
+            """차량 크기를 고려한 충돌 검사 - 정확한 버전"""
             corners = get_vehicle_corners(x, y, theta)
             
+            # 각 코너 점 검사
             for cx, cy in corners:
                 ix, iy = world_to_grid(cx, cy)
                 if not (0 <= ix < w and 0 <= iy < h):
@@ -114,13 +115,17 @@ class HybridJPS:
                 if grid[iy, ix] == 1:
                     return True
             
-            # 차량 외곽선 샘플링
+            # 차량 외곽선을 샘플링 (필수!)
             for i in range(len(corners)):
                 c1 = corners[i]
                 c2 = corners[(i + 1) % len(corners)]
-                num_samples = int(math.hypot(c2[0] - c1[0], c2[1] - c1[1]) / (resolution * 0.5)) + 1
-                for j in range(num_samples):
-                    t = j / max(num_samples - 1, 1)
+                
+                # 각 변의 길이에 비례하여 샘플링
+                edge_length = math.hypot(c2[0] - c1[0], c2[1] - c1[1])
+                num_samples = max(3, int(edge_length / resolution))
+                
+                for j in range(num_samples + 1):
+                    t = j / num_samples
                     sx = c1[0] + (c2[0] - c1[0]) * t
                     sy = c1[1] + (c2[1] - c1[1]) * t
                     ix, iy = world_to_grid(sx, sy)
@@ -128,10 +133,12 @@ class HybridJPS:
                         return True
                     if grid[iy, ix] == 1:
                         return True
+            
             return False
 
         def heuristic(a, b=goal_node):
-            return math.hypot(a[0] - b[0], a[1] - b[1])
+            """휴리스틱 - 간단하게"""
+            return math.hypot(a[0] - b[0], a[1] - b[1]) * 1.1  # 약간의 가중치
 
         THETA_BINS = 16
         def discretize_pose(x, y, theta):
@@ -176,52 +183,72 @@ class HybridJPS:
                                     return True
             return False
 
-        def jump(curr, dir_vec):
-            """JPS 점프 (빠른 탐색) - 더 작은 스텝으로"""
+        def jump(curr, dir_vec, prev_dir=None):
+            """JPS 점프 (빠른 탐색)"""
             cx, cy, ctheta = curr
             dx, dy = dir_vec
-            step = resolution * 1.0
-            max_steps = 100
+            step = resolution * 1.5
+            max_steps = 80
+
+            # 방향 전환 감지
+            needs_smooth_transition = False
+            if prev_dir is not None:
+                prev_dx, prev_dy = prev_dir
+                prev_diagonal = (prev_dx != 0 and prev_dy != 0)
+                curr_diagonal = (dx != 0 and dy != 0)
+                if prev_diagonal != curr_diagonal:
+                    needs_smooth_transition = True
 
             for i in range(max_steps):
                 nx, ny = cx + dx * step, cy + dy * step
                 
-                # 간단한 점 충돌만 체크
+                # 점프 경로 상의 충돌 체크 (차량 크기 고려)
                 ix, iy = world_to_grid(nx, ny)
                 if not (0 <= ix < w and 0 <= iy < h) or grid[iy, ix] == 1:
-                    # 막혔으면 이전 위치를 프리미티브 지점으로
                     if i > 0:
-                        return (cx, cy, ctheta, True)
+                        return (cx, cy, ctheta, True, dir_vec)
                     return None
                 
-                # Forced Neighbor 발견!
-                if has_forced_neighbor((ix, iy), (dx, dy)):
-                    return (nx, ny, ctheta, True)
+                # 점프하는 위치도 차량 충돌 체크
+                if check_vehicle_collision(nx, ny, ctheta):
+                    if i > 0:
+                        return (cx, cy, ctheta, True, dir_vec)
+                    return None
+                
+                # 방향 전환 지점이면 바로 프리미티브로
+                if needs_smooth_transition and i < 3:
+                    return (nx, ny, ctheta, True, dir_vec)
+                
+                # Forced Neighbor 발견
+                if i % 2 == 0:
+                    if has_forced_neighbor((ix, iy), (dx, dy)):
+                        return (nx, ny, ctheta, True, dir_vec)
                 
                 # 목표에 가까워지면 프리미티브로 정밀 접근
                 dist_to_goal = math.hypot(nx - goal[0], ny - goal[1])
-                if dist_to_goal < 15.0:  # 목표 15m 이내
-                    return (nx, ny, ctheta, True)
+                if dist_to_goal < 20.0:  # 15 -> 20 (여유있게)
+                    return (nx, ny, ctheta, True, dir_vec)
                 
-                # 일정 거리마다 프리미티브 옵션
-                if i % 5 == 0 and i > 0:
-                    return (nx, ny, ctheta, True)
+                # 프리미티브 옵션
+                if i % 8 == 0 and i > 0:  # 10 -> 8
+                    return (nx, ny, ctheta, True, dir_vec)
                 
                 cx, cy = nx, ny
             
             return None
 
         open_set = []
-        heappush(open_set, (heuristic(start_node), 0.0, start_node, False))
+        heappush(open_set, (heuristic(start_node), 0.0, start_node, False, None))
         came_from = {}
         g_score = defaultdict(lambda: float('inf'))
         g_score[start_node] = 0.0
         visited = {}  # dict로 변경: best g_score 저장
+        direction_history = {}  # 각 노드의 이전 이동 방향 저장
 
         directions = [(1,0), (0,1), (-1,0), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
 
         while open_set:
-            _, cost, current, use_primitives = heappop(open_set)
+            _, cost, current, use_primitives, prev_dir = heappop(open_set)
             x, y, theta = current
 
             dkey = discretize_pose(x, y, theta)
@@ -245,11 +272,11 @@ class HybridJPS:
                     ny = y + dx * sin_t + dy * cos_t
                     ntheta = (theta + dtheta) % (2 * math.pi)
 
-                    # 프리미티브 경로 충돌 검사 (샘플링으로 간소화)
+                    # 프리미티브 경로 전체를 정밀하게 체크
                     collision = False
-                    sample_rate = 3  # 3개마다 하나씩만 체크
+                    sample_rate = 2  # 5 -> 2 (더 촘촘하게)
                     for idx, (px, py, ptheta) in enumerate(prim['path'][1:]):
-                        if idx % sample_rate != 0:
+                        if idx % sample_rate != 0 and idx != len(prim['path']) - 2:
                             continue
                         wx = x + px * cos_t - py * sin_t
                         wy = y + px * sin_t + py * cos_t
@@ -267,16 +294,16 @@ class HybridJPS:
                     if tent_g < g_score[neighbor]:
                         g_score[neighbor] = tent_g
                         priority = tent_g + heuristic(neighbor)
-                        # 프리미티브 후 다시 점프 모드로 전환 가능
-                        heappush(open_set, (priority, tent_g, neighbor, False))
+                        heappush(open_set, (priority, tent_g, neighbor, False, prev_dir))
                         came_from[neighbor] = (current, prim)
             
             # 일반 구간 -> JPS 점프
             else:
                 for dx, dy in directions:
-                    jumped = jump(current, (dx, dy))
+                    # 이전 방향 정보 전달
+                    jumped = jump(current, (dx, dy), prev_dir)
                     if jumped:
-                        jx, jy, jtheta, needs_primitives = jumped
+                        jx, jy, jtheta, needs_primitives, new_dir = jumped
                         neighbor = (jx, jy, jtheta)
                         dist = math.hypot(x - jx, y - jy)
                         tent_g = cost + dist
@@ -284,7 +311,7 @@ class HybridJPS:
                         if tent_g < g_score[neighbor]:
                             g_score[neighbor] = tent_g
                             priority = tent_g + heuristic(neighbor)
-                            heappush(open_set, (priority, tent_g, neighbor, needs_primitives))
+                            heappush(open_set, (priority, tent_g, neighbor, needs_primitives, new_dir))
                             came_from[neighbor] = current
 
         return None

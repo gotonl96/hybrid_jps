@@ -4,15 +4,11 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-sys.path.append(os.path.join(BASE_DIR, "map"))
-sys.path.append(os.path.join(BASE_DIR, "path_planner/jps"))
-sys.path.append(os.path.join(BASE_DIR, "path_planner/hybrid_astar"))
 
-from map_generate import MapGenerator
-from jps import method as jps_method
-from astar import method as astar_method
-from hybrid_a_star import hybrid_a_star_planning
+from map.map_generate import MapGenerator
+from path_planner.hybrid_astar.hybrid_a_star import hybrid_a_star_planning
+from path_planner.hybrid_jps.hybrid_jps import HybridJPS
+import path_planner.jps.jps
 
 XY_GRID_RESOLUTION = 2.0  # [m]
 YAW_GRID_RESOLUTION = np.deg2rad(15.0)  # [rad]
@@ -38,22 +34,22 @@ def main():
     start = map_gen.start
     goal = map_gen.goal
 
-    # print map 
-    obstacle_points = np.argwhere(grid_map == 1)
-    obstacle_xy = [(int(x), int(y)) for y, x in obstacle_points]
-    print(obstacle_xy)
+    # # print map 
+    # obstacle_points = np.argwhere(grid_map == 1)
+    # obstacle_xy = [(int(x), int(y)) for y, x in obstacle_points]
+    # print(obstacle_xy)
 
-    # Hybrid A* 실행 (격자 장애물 좌표 변환)
-    obstacle_points = np.argwhere(grid_map == 1)  # (y, x
-    ox = [int(x) for y, x in obstacle_points]
-    oy = [int(y) for y, x in obstacle_points]
+    # # Hybrid A* 실행 (격자 장애물 좌표 변환)
+    # obstacle_points = np.argwhere(grid_map == 1)  # (y, x
+    # ox = [int(x) for y, x in obstacle_points]
+    # oy = [int(y) for y, x in obstacle_points]
 
-    # Hybrid A*는 [x, y, yaw] 형태의 시작/목표 필요
-    start_hybrid = [float(start[0]), float(start[1]), np.deg2rad(90.0)]
-    goal_hybrid = [float(goal[0]), float(goal[1]), np.deg2rad(-90.0)]
-    path_obj = hybrid_a_star_planning(
-        start_hybrid, goal_hybrid, ox, oy, 2.0, np.deg2rad(15.0)
-    )
+    # # Hybrid A*는 [x, y, yaw] 형태의 시작/목표 필요
+    # start_hybrid = [float(start[0]), float(start[1]), np.deg2rad(90.0)]
+    # goal_hybrid = [float(goal[0]), float(goal[1]), np.deg2rad(-90.0)]
+    # path_obj = hybrid_a_star_planning(
+    #     start_hybrid, goal_hybrid, ox, oy, 2.0, np.deg2rad(15.0)
+    # )
 
 
 if __name__ == "__main__":
