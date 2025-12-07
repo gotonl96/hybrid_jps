@@ -34,7 +34,7 @@ def main():
     # 맵 생성
     MAP_SIZE = 100
     obstacle_count = 50
-    obstacle_size_range = (1, 5)
+    obstacle_size_range = (3, 8)
     map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, obstacle_count, obstacle_size_range)
     map_gen.generate_obstacles()
     grid_map = map_gen.get_map()
@@ -122,7 +122,6 @@ def main():
     visualizer.set_path(hybrid_jps_path, "Hybrid JPS")
     visualizer.set_path(jps_path, "JPS")
     visualizer.draw()
-
 
 if __name__ == "__main__":
     main()

@@ -21,7 +21,14 @@ class Visualizer:
     def set_path(self, path, path_type="Path"):
         self.path[path_type] = path
     
-    def draw(self, save_dir="results"):
+    def draw(self, save_dir="results", show_plot=True):
+        """
+        경로 계획 결과를 시각화하고 저장
+        
+        Args:
+            save_dir (str): 결과를 저장할 디렉토리 경로
+            show_plot (bool): True면 화면에 표시, False면 저장만 수행
+        """
         if self.grid_map is None:
             raise ValueError("Grid map not set.")
 
@@ -60,4 +67,8 @@ class Visualizer:
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         print(f"✅ Figure saved: {filepath}")
         
-        plt.show()
+        # show_plot이 True일 때만 화면에 표시
+        if show_plot:
+            plt.show()
+        else:
+            plt.close()  # 메모리 해제
