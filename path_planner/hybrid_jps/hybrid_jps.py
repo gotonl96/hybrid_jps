@@ -4,6 +4,10 @@ from heapq import heappush, heappop
 from collections import defaultdict
 from typing import List, Tuple, Optional
 
+import sys
+import pathlib
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
+
 # 차량 파라미터
 VEHICLE_L = 2.8
 VEHICLE_WIDTH = 2.0
@@ -397,9 +401,9 @@ from visualization.visualize import Visualizer
 
 if __name__ == "__main__":
     
-    MAP_SIZE = 1000
+    MAP_SIZE = 100
     
-    map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, 1500, (5, 10))
+    map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, int(MAP_SIZE / 3), (5, 10))
     map_gen.generate_obstacles()
     map_gen.save_map()
     grid = map_gen.get_map()
