@@ -8,35 +8,26 @@ import sys
 import pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
-# 차량 파라미터
-VEHICLE_L = 2.8
-VEHICLE_WIDTH = 2.0
-VEHICLE_LENGTH = 4.5
-SAFETY_MARGIN = 0.3
+# 차량 파라미터 (새 값 적용)
+WB = 3.0  # rear to front wheel
+W = 2.0  # width of car
+LF = 3.3  # distance from rear to vehicle front end
+LB = 1.0  # distance from rear to vehicle back end
+MAX_STEER = 0.6  # [rad] maximum steering angle
+BUBBLE_DIST = (LF - LB) / 2.0  # distance from rear to center of vehicle.
+BUBBLE_R = np.hypot((LF + LB) / 2.0, W / 2.0)  # bubble radius
+VRX = [LF, LF, -LB, -LB, LF]
+VRY = [W / 2, -W / 2, -W / 2, W / 2, W / 2]
 DT = 0.2
 SPEED = 5.0
 
 def get_vehicle_corners(x, y, theta):
-    half_length = (VEHICLE_LENGTH + SAFETY_MARGIN) / 2
-    half_width = (VEHICLE_WIDTH + SAFETY_MARGIN) / 2
-    
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-    
-    corners = [
-        (half_length, half_width),
-        (half_length, -half_width),
-        (-half_length, -half_width),
-        (-half_length, half_width)
-    ]
-    
-    world_corners = []
-    for cx, cy in corners:
-        wx = x + cx * cos_t - cy * sin_t
-        wy = y + cx * sin_t + cy * cos_t
-        world_corners.append((wx, wy))
-    
-    return world_corners
+    corners = []
+    for rx, ry in zip(VRX, VRY):
+        wx = x + rx * math.cos(theta) - ry * math.sin(theta)
+        wy = y + rx * math.sin(theta) + ry * math.cos(theta)
+        corners.append((wx, wy))
+    return corners
 
 
 def _generate_primitives():
@@ -55,7 +46,7 @@ def _generate_primitives():
             t += DT
             dx = SPEED * math.cos(theta) * DT
             dy = SPEED * math.sin(theta) * DT
-            dtheta = (SPEED / VEHICLE_L) * math.tan(rad) * DT
+            dtheta = (SPEED / WB) * math.tan(rad) * DT
             x += dx
             y += dy
             theta += dtheta
@@ -66,16 +57,19 @@ def _generate_primitives():
         
         cost = distance_cost + rotation_penalty
         
+        # 직진/회전 구분
+        is_straight = abs(deg) <= 5  # ±5도 이내는 직진으로 간주
+        
         primitives.append({
             'path': path,
             'end': (x, y, theta),
             'cost': cost,
             'steer': deg,
-            'direction': _classify_direction(x, y)  # 방향 분류
+            'direction': _classify_direction(x, y),
+            'is_straight': is_straight
         })
     
     return primitives
-
 
 def _classify_direction(dx, dy):
     """프리미티브의 방향을 분류 (직진/대각선 판별용)"""
@@ -100,96 +94,172 @@ def _classify_direction(dx, dy):
     else:  # -67.5 <= angle_deg < -22.5
         return (1, -1)  # 남동
 
-
 PRIMITIVES = _generate_primitives()
 
+from scipy.spatial import cKDTree
 
-class VehicleKinematicJPS:
+def rot_mat_2d(yaw):
+    c = math.cos(yaw)
+    s = math.sin(yaw)
+    return np.array([[c, -s], [s, c]])
+
+def rectangle_check(x, y, yaw, ox, oy):
+    rot = rot_mat_2d(yaw)
+    for iox, ioy in zip(ox, oy):
+        tx = iox - x
+        ty = ioy - y
+        converted_xy = np.stack([tx, ty]).T @ rot
+        rx, ry = converted_xy[0], converted_xy[1]
+        if not (rx > LF or rx < -LB or ry > W / 2.0 or ry < -W / 2.0):
+            return False  # collision
+    return True  # no collision
+
+def check_car_collision(x_list, y_list, yaw_list, ox, oy, kd_tree):
+    """차량 충돌 검사 - False를 반환하면 충돌"""
+    for i_x, i_y, i_yaw in zip(x_list, y_list, yaw_list):
+        cx = i_x + BUBBLE_DIST * math.cos(i_yaw)
+        cy = i_y + BUBBLE_DIST * math.sin(i_yaw)
+        ids = kd_tree.query_ball_point([cx, cy], BUBBLE_R)
+        if not ids:
+            continue
+        if not rectangle_check(i_x, i_y, i_yaw,
+                               [ox[i] for i in ids], [oy[i] for i in ids]):
+            return False  # collision
+    return True  # no collision
+
+
+def try_analytic_shot(curr_pose, goal_pose, ox, oy, kd_tree, resolution):
+    """
+    목표 지점이 가까우면 직선/곡선으로 직접 연결 시도
+    
+    간단한 Analytic Expansion:
+    1. 목표까지의 거리가 threshold 이내인지 확인
+    2. 직선 경로를 생성
+    3. 경로상의 모든 점에서 충돌 검사
+    4. 충돌이 없으면 해당 경로 반환
+    
+    Returns:
+        path: 성공시 [(x, y), ...] 리스트, 실패시 None
+    """
+    x, y, theta = curr_pose
+    gx, gy, gtheta = goal_pose
+    
+    # 거리 체크
+    dist = math.hypot(gx - x, gy - y)
+    
+    # 너무 멀면 시도하지 않음
+    if dist > 30.0:
+        return None
+    
+    # 각도 차이 체크
+    target_angle = math.atan2(gy - y, gx - x)
+    angle_diff = abs(math.atan2(math.sin(theta - target_angle), 
+                                math.cos(theta - target_angle)))
+    
+    # 각도가 너무 크면 직선 연결 불가
+    if angle_diff > math.radians(45):
+        return None
+    
+    # 직선 경로 생성 (세밀하게 샘플링)
+    num_samples = max(10, int(dist / resolution))
+    path_samples = []
+    
+    for i in range(num_samples + 1):
+        t = i / num_samples
+        px = x + (gx - x) * t
+        py = y + (gy - y) * t
+        ptheta = theta + (gtheta - theta) * t
+        path_samples.append((px, py, ptheta))
+    
+    # 전체 경로에 대해 충돌 검사
+    for px, py, ptheta in path_samples:
+        x_list = [px]
+        y_list = [py]
+        yaw_list = [ptheta]
+        
+        if not check_car_collision(x_list, y_list, yaw_list, ox, oy, kd_tree):
+            return None  # 충돌 발생
+    
+    # 충돌이 없으면 경로 반환
+    return [(px, py) for px, py, _ in path_samples]
+
+
+class HybridJPS:
     @staticmethod
     def plan(grid: np.ndarray,
-             start: Tuple[float, float],
-             goal: Tuple[float, float],
+             start_node: Tuple[float, float, float],
+             goal_node: Tuple[float, float, float],
              resolution: float = 1.0) -> Optional[List[Tuple[float, float]]]:
         """
-        Vehicle Kinematic JPS
-        - JPS의 모든 동작을 차량 프리미티브로 수행
-        - Neighbor 탐색: 프리미티브 기반
-        - Jump: 같은 방향 프리미티브 반복
-        - 차량 크기 기반 충돌 검사
+        Vehicle Kinematic JPS with Adaptive Step and Analytic Expansion
+        
+        개선사항:
+        1. Adaptive Step: 직진은 멀리 점프, 회전은 기본 단위만 이동
+        2. Analytic Expansion: 목표 근처에서 직접 연결 시도
         """
         h, w = grid.shape
-        
-        start_theta = math.atan2(goal[1] - start[1], goal[0] - start[0])
-        start_node = (start[0], start[1], start_theta)
-        goal_node = (goal[0], goal[1], 0.0)
         
         grid_get = grid.__getitem__
         
         def world_to_grid(x, y):
-            return int(x / resolution), int(y / resolution)
+            gx, gy = int(x / resolution), int(y / resolution)
+            if not (0 <= gx < w and 0 <= gy < h):
+                return None, None
+            return gx, gy
+        
+        # 장애물 좌표 추출
+        oy, ox = np.where(grid == 1)
+        ox = ox * resolution
+        oy = oy * resolution
+        kd_tree = cKDTree(np.vstack((ox, oy)).T)
         
         # 충돌 검사 캐시
         collision_cache = {}
         
-        def check_vehicle_collision(x, y, theta):
-            """차량 크기 기반 충돌 검사"""
+        def is_collision(x, y, theta):
+            """차량 크기 기반 충돌 검사. Returns: True면 충돌, False면 안전"""
             cache_key = (round(x, 1), round(y, 1), round(theta, 2))
             if cache_key in collision_cache:
                 return collision_cache[cache_key]
             
-            corners = get_vehicle_corners(x, y, theta)
+            gx, gy = world_to_grid(x, y)
+            if gx is None or gy is None:
+                collision_cache[cache_key] = True
+                return True
             
-            # 코너 체크
-            for cx, cy in corners:
-                ix, iy = world_to_grid(cx, cy)
-                if not (0 <= ix < w and 0 <= iy < h):
-                    collision_cache[cache_key] = True
-                    return True
-                if grid_get((iy, ix)) == 1:
-                    collision_cache[cache_key] = True
-                    return True
+            x_list = [x]
+            y_list = [y]
+            yaw_list = [theta]
             
-            # 외곽선 샘플링
-            for i in range(len(corners)):
-                c1 = corners[i]
-                c2 = corners[(i + 1) % len(corners)]
-                
-                edge_length = math.hypot(c2[0] - c1[0], c2[1] - c1[1])
-                num_samples = max(2, int(edge_length / resolution * 0.8))
-                
-                for j in range(1, num_samples):
-                    t = j / num_samples
-                    sx = c1[0] + (c2[0] - c1[0]) * t
-                    sy = c1[1] + (c2[1] - c1[1]) * t
-                    ix, iy = world_to_grid(sx, sy)
-                    if not (0 <= ix < w and 0 <= iy < h):
-                        collision_cache[cache_key] = True
-                        return True
-                    if grid_get((iy, ix)) == 1:
-                        collision_cache[cache_key] = True
-                        return True
+            no_collision = check_car_collision(x_list, y_list, yaw_list, ox, oy, kd_tree)
+            has_collision = not no_collision
             
-            collision_cache[cache_key] = False
-            return False
+            collision_cache[cache_key] = has_collision
+            return has_collision
         
-        def check_primitive_collision(x, y, theta, primitive):
-            """프리미티브 경로 전체의 충돌 검사"""
+        def check_primitive_path_collision(x, y, theta, primitive):
+            """프리미티브 경로 전체의 충돌 검사. Returns: True면 충돌, False면 안전"""
             cos_t = math.cos(theta)
             sin_t = math.sin(theta)
             
-            # 샘플링하여 체크
-            for idx, (px, py, ptheta) in enumerate(primitive['path'][1::2]):
+            for idx, (px, py, ptheta) in enumerate(primitive['path']):
+                if idx == 0:
+                    continue
+                    
                 wx = x + px * cos_t - py * sin_t
                 wy = y + px * sin_t + py * cos_t
                 wtheta = (theta + ptheta) % (2 * math.pi)
                 
-                if check_vehicle_collision(wx, wy, wtheta):
+                if is_collision(wx, wy, wtheta):
                     return True
             
             return False
         
         def has_forced_neighbor_grid(gx, gy, direction):
             """그리드 기반 Forced Neighbor 검사"""
+            if gx is None or gy is None:
+                return False
+                
             dx, dy = direction
             
             if dx != 0 and dy != 0:
@@ -217,20 +287,25 @@ class VehicleKinematicJPS:
         
         def jump_with_primitive(curr, primitive, prev_direction):
             """
-            프리미티브를 반복 적용하여 점프
-            - 같은 방향으로 계속 진행
-            - Forced Neighbor 발견 시 중단
+            Adaptive Step을 적용한 점프 함수
+            
+            - 직진(Straight): 장애물이 없으면 멀리 점프 (max_jumps 높음)
+            - 회전(Turn): 기본 단위만 이동 (점프 없음)
             """
             x, y, theta = curr
             direction = primitive['direction']
+            is_straight = primitive['is_straight']
             
             # 방향 변경 감지
             if prev_direction is not None and prev_direction != direction:
-                # 방향이 바뀌면 프리미티브 적용 (부드러운 전환)
                 return _apply_primitive(curr, primitive)
             
-            # 같은 방향으로 점프
-            max_jumps = 15  # 최대 점프 횟수
+            # Adaptive Step: 직진은 멀리 점프, 회전은 점프 안 함
+            if is_straight:
+                max_jumps = 20  # 직진: 멀리 점프
+            else:
+                max_jumps = 1   # 회전: 점프 안 함 (기본 단위만)
+            
             jumped = False
             
             for i in range(max_jumps):
@@ -244,7 +319,7 @@ class VehicleKinematicJPS:
                 ntheta = (theta + dtheta) % (2 * math.pi)
                 
                 # 충돌 체크
-                if check_primitive_collision(x, y, theta, primitive):
+                if check_primitive_path_collision(x, y, theta, primitive):
                     if jumped:
                         return (x, y, theta, direction, True)
                     return None
@@ -252,12 +327,18 @@ class VehicleKinematicJPS:
                 # 그리드 위치
                 gx, gy = world_to_grid(nx, ny)
                 
+                # 경계 체크
+                if gx is None or gy is None:
+                    if jumped:
+                        return (x, y, theta, direction, True)
+                    return None
+                
                 # Forced Neighbor 체크
                 if has_forced_neighbor_grid(gx, gy, direction):
                     return (nx, ny, ntheta, direction, True)
                 
                 # 목표 근처
-                if math.hypot(nx - goal[0], ny - goal[1]) < 25.0:
+                if math.hypot(nx - goal_node[0], ny - goal_node[1]) < 25.0:
                     return (nx, ny, ntheta, direction, True)
                 
                 # 다음 점프 준비
@@ -273,7 +354,7 @@ class VehicleKinematicJPS:
             """프리미티브를 한 번만 적용 (방향 전환용)"""
             x, y, theta = curr
             
-            if check_primitive_collision(x, y, theta, primitive):
+            if check_primitive_path_collision(x, y, theta, primitive):
                 return None
             
             cos_t = math.cos(theta)
@@ -300,6 +381,16 @@ class VehicleKinematicJPS:
             itheta = int((theta % (2 * math.pi)) / (2 * math.pi) * THETA_BINS)
             return (ix, iy, itheta)
         
+        # 시작점 충돌 체크
+        if is_collision(start_node[0], start_node[1], start_node[2]):
+            print("경고: 시작점이 장애물과 충돌합니다!")
+            return None
+        
+        # 목표점 충돌 체크
+        if is_collision(goal_node[0], goal_node[1], goal_node[2]):
+            print("경고: 목표점이 장애물과 충돌합니다!")
+            return None
+        
         # A* 탐색
         open_set = []
         heappush(open_set, (heuristic(start_node), 0.0, start_node, None))
@@ -309,8 +400,8 @@ class VehicleKinematicJPS:
         visited = {}
         
         # 목표 방향 우선순위
-        goal_dx = 1 if goal[0] > start[0] else (-1 if goal[0] < start[0] else 0)
-        goal_dy = 1 if goal[1] > start[1] else (-1 if goal[1] < start[1] else 0)
+        goal_dx = 1 if goal_node[0] > start_node[0] else (-1 if goal_node[0] < start_node[0] else 0)
+        goal_dy = 1 if goal_node[1] > start_node[1] else (-1 if goal_node[1] < start_node[1] else 0)
         
         iterations = 0
         max_iterations = 15000
@@ -327,12 +418,26 @@ class VehicleKinematicJPS:
             visited[dkey] = cost
             
             # 목표 도달
-            if math.hypot(x - goal[0], y - goal[1]) < resolution * 1.5:
+            if math.hypot(x - goal_node[0], y - goal_node[1]) < resolution * 1.5:
+                print(f"경로 탐색 완료! (반복 횟수: {iterations})")
                 return _reconstruct_path(came_from, current)
             
+            # ===== Analytic Expansion 시도 =====
+            # 목표가 가까우면 직접 연결 시도
+            dist_to_goal = math.hypot(x - goal_node[0], y - goal_node[1])
+            if dist_to_goal < 30.0:
+                analytic_path = try_analytic_shot(
+                    current, goal_node, ox, oy, kd_tree, resolution
+                )
+                if analytic_path is not None:
+                    print(f"Analytic Expansion 성공! (반복 횟수: {iterations})")
+                    # 현재까지의 경로 + analytic 경로
+                    base_path = _reconstruct_path(came_from, current)
+                    return base_path + analytic_path[1:]  # 중복 제거
+            
             # 목표 방향 계산
-            goal_angle = math.atan2(goal[1] - y, goal[0] - x)
-            current_dist = math.hypot(goal[0] - x, goal[1] - y)
+            goal_angle = math.atan2(goal_node[1] - y, goal_node[0] - x)
+            current_dist = math.hypot(goal_node[0] - x, goal_node[1] - y)
             
             # 모든 프리미티브로 Neighbor 탐색
             for prim in PRIMITIVES:
@@ -344,14 +449,14 @@ class VehicleKinematicJPS:
                 if alignment < -0.5:
                     continue
                 
-                # 점프 또는 프리미티브 적용
+                # 점프 또는 프리미티브 적용 (Adaptive Step 적용됨)
                 result = jump_with_primitive(current, prim, prev_dir)
                 
                 if result:
                     nx, ny, ntheta, new_dir, needs_expansion = result
                     
                     # 목표에서 멀어지는지 체크
-                    new_dist = math.hypot(goal[0] - nx, goal[1] - ny)
+                    new_dist = math.hypot(goal_node[0] - nx, goal_node[1] - ny)
                     if new_dist > current_dist * 1.1:
                         continue
                     
@@ -370,6 +475,7 @@ class VehicleKinematicJPS:
                         heappush(open_set, (priority, tent_g, neighbor, new_dir))
                         came_from[neighbor] = (current, prim)
         
+        print(f"경로를 찾지 못했습니다. (반복 횟수: {iterations})")
         return None
 
 
@@ -401,7 +507,7 @@ from visualization.visualize import Visualizer
 
 if __name__ == "__main__":
     
-    MAP_SIZE = 100
+    MAP_SIZE = 300
     
     map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, int(MAP_SIZE / 3), (5, 10))
     map_gen.generate_obstacles()
@@ -411,20 +517,21 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
     
-    path = VehicleKinematicJPS.plan(
+    path = HybridJPS.plan(
         grid=grid,
-        start=(10.5, 10.5),
-        goal=(MAP_SIZE - 10, MAP_SIZE - 10),
+        start_node=(10.5, 10.5, 0.0),
+        goal_node=(MAP_SIZE - 10, MAP_SIZE - 10, 0.0),
         resolution=1.0
     )
 
     elapsed = time.time() - start_time
     print(f"경로 탐색 시간: {elapsed:.2f} 초")
 
-    visualizer = Visualizer()
-    visualizer.set_grid_map(grid)
-    visualizer.set_start_goal((10.5, 10.5), (MAP_SIZE - 10, MAP_SIZE - 10))
-    visualizer.set_path(path, "Hybrid JPS (Jump + Primitives)")
-    visualizer.draw()
-    
-    
+    if path:
+        visualizer = Visualizer()
+        visualizer.set_grid_map(grid)
+        visualizer.set_start_goal((10.5, 10.5), (MAP_SIZE - 10, MAP_SIZE - 10))
+        visualizer.set_path(path, "Hybrid JPS (Adaptive + Analytic)")
+        visualizer.draw()
+    else:
+        print("경로를 찾지 못했습니다.")
