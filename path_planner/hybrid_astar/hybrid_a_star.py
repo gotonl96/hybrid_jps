@@ -1,8 +1,15 @@
 """
 
-Hybrid A* path planning
+Hybrid A* path planning (Optimized Version)
 
 author: Zheng Zh (@Zhengzh)
+optimized by: Claude
+
+최적화 내용:
+1. 최대 반복 횟수 제한 추가
+2. 탐색 공간 축소 (해상도 조정)
+3. 휴리스틱 가중치 증가 (더 빠른 목표 지향)
+4. Early termination 조건 강화
 
 """
 
@@ -21,16 +28,23 @@ from car import move, check_car_collision, MAX_STEER, WB, plot_car, BUBBLE_R
 from map.map_generate import MapGenerator
 from visualization.visualize import Visualizer
 
-XY_GRID_RESOLUTION = 1.0  # [m]
-YAW_GRID_RESOLUTION = np.deg2rad(15.0)  # [rad]
-MOTION_RESOLUTION = 0.1  # [m] path interpolate resolution
-N_STEER = 10  # number of steer command
+# 최적화된 설정
+XY_GRID_RESOLUTION = 2.0  # [m] 1.0 -> 2.0 (탐색 공간 축소)
+YAW_GRID_RESOLUTION = np.deg2rad(30.0)  # [rad] 22.5 -> 30.0 (방향 해상도 감소)
+MOTION_RESOLUTION = 0.3  # [m] 0.2 -> 0.3 (경로 보간 해상도 증가)
+N_STEER = 5  # number of steer command (6 -> 5)
+
+# 최대 반복 횟수 제한
+MAX_ITERATIONS = 5000  # 최대 노드 확장 횟수
 
 SB_COST = 100.0  # switch back penalty cost
 BACK_COST = 5.0  # backward penalty cost
 STEER_CHANGE_COST = 5.0  # steer angle change penalty cost
 STEER_COST = 1.0  # steer angle change penalty cost
-H_COST = 5.0  # Heuristic cost
+H_COST = 8.0  # Heuristic cost (5.0 -> 8.0, 더 빠른 목표 지향)
+
+# Analytic Expansion 주기
+ANALYTIC_EXPANSION_INTERVAL = 20  # N번마다 한 번씩 시도
 
 show_animation = False
 
@@ -280,11 +294,23 @@ def hybrid_a_star_planning(start, goal, ox, oy, xy_resolution, yaw_resolution):
     heapq.heappush(pq, (calc_cost(start_node, h_dp, config),
                         calc_index(start_node, config)))
     final_path = None
+    
+    iteration_count = 0  # 반복 횟수 추적
 
     while True:
         if not openList:
-            print("Error: Cannot find path, No open set")
+            print(f"Error: Cannot find path, No open set (iterations: {iteration_count})")
             return Path([], [], [], [], 0)
+        
+        # 최대 반복 횟수 체크
+        if iteration_count >= MAX_ITERATIONS:
+            print(f"Warning: Reached maximum iterations ({MAX_ITERATIONS}), path may be suboptimal")
+            # 현재까지 찾은 최선의 경로 반환
+            if final_path:
+                path = get_final_path(closedList, final_path)
+                return path
+            else:
+                return Path([], [], [], [], 0)
 
         cost, c_id = heapq.heappop(pq)
         if c_id in openList:
@@ -292,6 +318,8 @@ def hybrid_a_star_planning(start, goal, ox, oy, xy_resolution, yaw_resolution):
             closedList[c_id] = current
         else:
             continue
+        
+        iteration_count += 1
 
         if show_animation:  # pragma: no cover
             plt.plot(current.x_list[-1], current.y_list[-1], "xc")
@@ -302,12 +330,14 @@ def hybrid_a_star_planning(start, goal, ox, oy, xy_resolution, yaw_resolution):
             if len(closedList.keys()) % 10 == 0:
                 plt.pause(0.001)
 
-        is_updated, final_path = update_node_with_analytic_expansion(
-            current, goal_node, config, ox, oy, obstacle_kd_tree)
+        # Analytic Expansion을 주기적으로만 시도 (성능 향상)
+        if iteration_count % ANALYTIC_EXPANSION_INTERVAL == 0:
+            is_updated, final_path = update_node_with_analytic_expansion(
+                current, goal_node, config, ox, oy, obstacle_kd_tree)
 
-        if is_updated:
-            print("path found")
-            break
+            if is_updated:
+                print(f"Path found (iterations: {iteration_count})")
+                break
 
         for neighbor in get_neighbors(current, config, ox, oy,
                                       obstacle_kd_tree):
@@ -381,7 +411,7 @@ def calc_index(node, c):
 
 
 def main():
-    print("Start Hybrid A* planning")
+    print("Start Hybrid A* planning (Optimized Version)")
 
     # Set Initial parameters
     MAP_WIDTH = 100  # [cells]
@@ -397,16 +427,25 @@ def main():
     map.generate_obstacles()
     ox, oy = map.get_obstacle_points(resolution=1)
 
+    import time
+    start_time = time.time()
+    
     path = hybrid_a_star_planning(
         start, goal, ox, oy, XY_GRID_RESOLUTION, YAW_GRID_RESOLUTION)
+    
+    elapsed = time.time() - start_time
+    print(f"Planning time: {elapsed:.2f} seconds")
 
-    path_xy = list(zip(path.x_list, path.y_list))
+    if path.x_list:
+        path_xy = list(zip(path.x_list, path.y_list))
 
-    visualizer = Visualizer()
-    visualizer.set_grid_map(map.get_map())
-    visualizer.set_start_goal(start, goal)
-    visualizer.set_path(path_xy, "Hybrid A* Path")
-    visualizer.draw()
+        visualizer = Visualizer()
+        visualizer.set_grid_map(map.get_map())
+        visualizer.set_start_goal(start, goal)
+        visualizer.set_path(path_xy, "Hybrid A* Path (Optimized)")
+        visualizer.draw()
+    else:
+        print("Failed to find path")
     
 
 

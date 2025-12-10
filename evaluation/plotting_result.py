@@ -3,6 +3,7 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 import time
+from datetime import datetime
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -31,7 +32,7 @@ def compute_path_length(path):
     return length
 
 
-def run_single_test(map_size, obstacle_count, obstacle_size_range):
+def run_single_test(map_size, obstacle_count, obstacle_size_range, save_visualization=False, test_name=""):
     """단일 테스트 실행 - 모든 플래너가 성공하면 True 반환"""
     
     map_gen = MapGenerator(map_size, map_size, obstacle_count, obstacle_size_range)
@@ -41,9 +42,9 @@ def run_single_test(map_size, obstacle_count, obstacle_size_range):
     goal = map_gen.goal
     
     temp_results = {
-        'Hybrid JPS': {'time': None, 'length': None, 'success': False},
-        'JPS': {'time': None, 'length': None, 'success': False},
-        'Hybrid A*': {'time': None, 'length': None, 'success': False}
+        'Hybrid JPS': {'time': None, 'length': None, 'success': False, 'path': None},
+        'JPS': {'time': None, 'length': None, 'success': False, 'path': None},
+        'Hybrid A*': {'time': None, 'length': None, 'success': False, 'path': None}
     }
     
     # Hybrid JPS
@@ -62,6 +63,7 @@ def run_single_test(map_size, obstacle_count, obstacle_size_range):
             temp_results['Hybrid JPS']['time'] = hybrid_jps_time
             temp_results['Hybrid JPS']['length'] = hybrid_jps_length
             temp_results['Hybrid JPS']['success'] = True
+            temp_results['Hybrid JPS']['path'] = hybrid_jps_path
             print(f"  Hybrid JPS - Time: {hybrid_jps_time:.4f}s, Length: {hybrid_jps_length:.2f}")
         else:
             print(f"  Hybrid JPS - 경로를 찾지 못했습니다")
@@ -80,6 +82,7 @@ def run_single_test(map_size, obstacle_count, obstacle_size_range):
             temp_results['JPS']['time'] = jps_time
             temp_results['JPS']['length'] = jps_length
             temp_results['JPS']['success'] = True
+            temp_results['JPS']['path'] = jps_path
             print(f"  JPS - Time: {jps_time:.4f}s, Length: {jps_length:.2f}")
         else:
             print(f"  JPS - 경로를 찾지 못했습니다")
@@ -98,12 +101,13 @@ def run_single_test(map_size, obstacle_count, obstacle_size_range):
         )
         hybrid_astar_time = time.time() - hybrid_astar_start_time
         
-        if path_obj and len(path_obj.x_list) > 0:
+        if path_obj and hasattr(path_obj, 'x_list') and len(path_obj.x_list) > 0:
             hybrid_astar_path = list(zip(path_obj.x_list, path_obj.y_list))
             hybrid_astar_length = compute_path_length(hybrid_astar_path)
             temp_results['Hybrid A*']['time'] = hybrid_astar_time
             temp_results['Hybrid A*']['length'] = hybrid_astar_length
             temp_results['Hybrid A*']['success'] = True
+            temp_results['Hybrid A*']['path'] = hybrid_astar_path
             print(f"  Hybrid A* - Time: {hybrid_astar_time:.4f}s, Length: {hybrid_astar_length:.2f}")
         else:
             print(f"  Hybrid A* - 경로를 찾지 못했습니다")
@@ -112,6 +116,23 @@ def run_single_test(map_size, obstacle_count, obstacle_size_range):
     
     # 모든 플래너가 성공했는지 확인
     all_success = all(temp_results[planner]['success'] for planner in temp_results)
+    
+    # 시각화 저장 (모든 플래너가 성공한 경우에만)
+    if save_visualization and all_success:
+        try:
+            visualizer = Visualizer()
+            visualizer.set_grid_map(grid_map)
+            visualizer.set_start_goal(start, goal)
+            visualizer.set_path(temp_results['Hybrid A*']['path'], "Hybrid A*")
+            visualizer.set_path(temp_results['Hybrid JPS']['path'], "Hybrid JPS")
+            visualizer.set_path(temp_results['JPS']['path'], "JPS")
+            
+            # 테스트명으로 고유한 디렉토리 생성
+            save_dir = f"results/{test_name}"
+            visualizer.draw(save_dir=save_dir, show_plot=False)
+            print(f"  💾 시각화 저장 완료: {save_dir}/")
+        except Exception as e:
+            print(f"  ⚠️  시각화 저장 실패: {e}")
     
     return all_success, temp_results
 
@@ -122,7 +143,7 @@ def test_map_size_variation():
     print("실험 1: 맵 크기 변화에 따른 성능 분석")
     print("=" * 70)
     
-    map_sizes = [10, 50, 100, 200, 300]
+    map_sizes = [10, 50, 100, 200, 300, 500, 800, 1000]
     obstacle_size_range = (1, 5)
     max_retries = 5  # 최대 재시도 횟수
     
@@ -133,7 +154,7 @@ def test_map_size_variation():
     }
     
     for map_size in map_sizes:
-        obstacle_count = map_size // 2
+        obstacle_count = int(map_size * 0.7)
         print(f"\n[맵 크기: {map_size}x{map_size}, 장애물 수: {obstacle_count}]")
         
         # 성공할 때까지 재시도
@@ -141,7 +162,12 @@ def test_map_size_variation():
             if attempt > 0:
                 print(f"  🔄 재시도 {attempt}/{max_retries-1}...")
             
-            all_success, temp_results = run_single_test(map_size, obstacle_count, obstacle_size_range)
+            test_name = f"experiment1_map{map_size}_obs{obstacle_count}"
+            all_success, temp_results = run_single_test(
+                map_size, obstacle_count, obstacle_size_range,
+                save_visualization=True,
+                test_name=test_name
+            )
             
             if all_success:
                 # 모두 성공하면 결과 저장하고 다음 맵으로
@@ -184,8 +210,8 @@ def test_obstacle_density_variation():
     print("실험 2: 장애물 밀도 변화에 따른 성능 분석")
     print("=" * 70)
     
-    map_size = 50
-    obstacle_counts = [5, 10, 20, 30, 40]
+    map_size = 150
+    obstacle_counts = [50, 100, 150, 200, 250, 300, 350]
     obstacle_size_range = (1, 5)
     max_retries = 5  # 최대 재시도 횟수
     
@@ -203,7 +229,12 @@ def test_obstacle_density_variation():
             if attempt > 0:
                 print(f"  🔄 재시도 {attempt}/{max_retries-1}...")
             
-            all_success, temp_results = run_single_test(map_size, obstacle_count, obstacle_size_range)
+            test_name = f"experiment2_map{map_size}_obs{obstacle_count}"
+            all_success, temp_results = run_single_test(
+                map_size, obstacle_count, obstacle_size_range,
+                save_visualization=True,
+                test_name=test_name
+            )
             
             if all_success:
                 # 모두 성공하면 결과 저장하고 다음 맵으로
@@ -301,7 +332,8 @@ def plot_results(x_values, results, xlabel, title_time, title_length, filename_p
     plt.tight_layout()
     
     # 그래프 저장
-    filename = f'{filename_prefix}_analysis.png'
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f'{filename_prefix}_{timestamp}_analysis.png'
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     print(f"\n📊 그래프 저장됨: {filename}")
     
@@ -342,19 +374,23 @@ def main():
     
     # 실험 1: 맵 크기 변화
     map_size_results = test_map_size_variation()
-    map_sizes = [10, 50, 100, 200, 300]
+    map_sizes = [10, 50, 100, 200, 300, 500, 800, 1000]
     print_summary_table(map_sizes, map_size_results, "실험 1: 맵 크기 변화", "Map Size")
     
     # 실험 2: 장애물 밀도 변화
     obstacle_results = test_obstacle_density_variation()
-    obstacle_counts = [5, 10, 20, 30, 40]
+    obstacle_counts = [50, 100, 150, 200, 250, 300, 350]
     print_summary_table(obstacle_counts, obstacle_results, "실험 2: 장애물 밀도 변화", "Obstacles")
     
     print("\n" + "=" * 70)
     print("✅ 모든 실험 완료!")
-    print("생성된 그래프 파일:")
-    print("  📊 map_size_analysis.png")
-    print("  📊 obstacle_density_analysis.png")
+    print("\n생성된 파일:")
+    print("📊 성능 분석 그래프:")
+    print("  - map_size_YYYYMMDD_HHMMSS_analysis.png")
+    print("  - obstacle_density_YYYYMMDD_HHMMSS_analysis.png")
+    print("\n🗺️  경로 시각화 이미지:")
+    print("  - results/experiment1_map*/path_planning_*.png")
+    print("  - results/experiment2_map*/path_planning_*.png")
     print("=" * 70)
 
 

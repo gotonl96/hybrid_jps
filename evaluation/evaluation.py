@@ -32,8 +32,8 @@ def compute_path_length(path):
 
 def main():
     # 맵 생성
-    MAP_SIZE = 100
-    obstacle_count = 50
+    MAP_SIZE = 1000
+    obstacle_count = 700
     obstacle_size_range = (3, 8)
     map_gen = MapGenerator(MAP_SIZE, MAP_SIZE, obstacle_count, obstacle_size_range)
     map_gen.generate_obstacles()
